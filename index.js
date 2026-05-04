@@ -4,17 +4,18 @@ const cors = require("cors");
 require('dotenv').config();
 const app = express();
 
-const AuthRoute = require("./src/routes/auth-routes");
+const authRoute = require("./src/routes/auth-routes");
+const taskRoute = require("./src/routes/task-routes");
 
 app.use(cors());
 app.use(express.json());
-app.use("/api/auth", AuthRoute);
+app.use("/api/auth", authRoute);
+app.use("/api/tasks", taskRoute);
 
 mongoose.connect(process.env.MONGO_URI).then((
   app.listen(process.env.PORT, () => {
     console.log(`Database connected successfully and server connected on Port ${process.env.PORT}`);
   })
-))
-  .catch((err) => {
-    console.log(err);
-  });
+)).catch((err) => {
+  console.log(err);
+});

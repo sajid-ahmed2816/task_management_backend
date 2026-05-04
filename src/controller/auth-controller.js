@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 const { sendResponse } = require("../helper/sendResponse");
 const { sendOTPEmail } = require("../helper/sendEmail");
-const userModel = require("../models/UserModel");
+const User = require("../models/UserModel");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 
@@ -15,7 +15,7 @@ const Login = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Email and password are required"));
     }
 
-    const user = await userModel.findOne({ email });
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).send(sendResponse(false, null, "User not found"));
     }
@@ -58,7 +58,7 @@ const Signup = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Required all data"));
     };
 
-    const existingUser = await userModel.findOne({ email });
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(409).send(sendResponse(false, null, "Email already registered"));
     };
@@ -67,7 +67,7 @@ const Signup = async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
 
-    const user = new userModel({
+    const user = new User({
       name,
       email,
       password: hashedPassword,
@@ -112,9 +112,9 @@ const Auth = async (req, res) => {
     }
 
     // Find or create user
-    let user = await userModel.findOne({ email });
+    let user = await User.findOne({ email });
     if (!user) {
-      user = new userModel({
+      user = new User({
         firstName,
         lastName,
         email,
@@ -145,7 +145,7 @@ const VerifyOTP = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Email and OTP required"));
     };
 
-    const user = await userModel.findOne({ email });
+    const user = await User.findOne({ email });
 
     if (!user) {
       return res.status(404).send(sendResponse(false, null, "User not found"));
@@ -184,7 +184,7 @@ const ResendOTP = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Email is required"));
     }
 
-    const user = await userModel.findOne({ email });
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).send(sendResponse(false, null, "User not found"));
     }
