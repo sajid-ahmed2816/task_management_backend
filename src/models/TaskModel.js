@@ -50,6 +50,7 @@ const taskSchema = new mongoose.Schema(
       {
         filename: String,
         url: String,
+        public_id: String,
       },
     ],
     subTasks: [
