@@ -7,6 +7,7 @@ const userSchema = mongoose.Schema({
   },
   profile_picture: {
     type: String,
+    default: null
   },
   email: {
     type: String,

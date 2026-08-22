@@ -19,19 +19,24 @@ const getTasks = async (req, res) => {
       filter.status = status;
     }
 
-    const tasks = await Task.find(filter)
-      .populate("assignees", "name profile_picture email")
-      .populate("comments.user", "name profile_picture")
-      .lean(); // lean to modify objects
+    const tasks = await Task.find(filter).populate("assignees", "name profile_picture").lean(); // lean to modify objects
 
     // Add computed progress directly to each task
     const tasksWithProgress = tasks.map((task) => {
       const progress = computeProgress(task.subTasks);
+      const commentCount = Array.isArray(task.comments) ? task.comments.length : 0;
+      const attachmentCount = Array.isArray(task.attachments) ? task.attachments.length : 0;
+
+      delete task.comments;
+      delete task.attachments;
+
       return {
         ...task,
         progressPercentage: progress.percentage,
         completedSubtasks: progress.completed,
         totalSubtasks: progress.total,
+        commentCount,
+        attachmentCount
       };
     });
 
@@ -111,7 +116,6 @@ const createTask = async (req, res) => {
 };
 
 const updateTask = async (req, res) => {
-  console.log("🚀 ~ updateTask ~ req:", req)
   const newlyUploadedPublicIds = [];
   try {
     const userId = req.user.id;

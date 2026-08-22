@@ -10,8 +10,8 @@ const taskRoute = require("./src/routes/task-routes");
 
 app.use(cors());
 app.use(express.json());
-app.use("/api", fileRoute);
 app.use("/api/auth", authRoute);
+app.use("/api", fileRoute);
 app.use("/api/tasks", taskRoute);
 
 mongoose.connect(process.env.MONGO_URI).then((

@@ -25,19 +25,33 @@ const Login = async (req, res) => {
       return res.status(401).send(sendResponse(false, null, "Invalid credentials"));
     }
 
-    const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    // If user is verified, proceed with login
+    if (user.isVerified) {
+      const token = jwt.sign(
+        { id: user._id, email: user.email, role: user.role },
+        JWT_SECRET,
+        { expiresIn: "7d" }
+      );
+      const userWithoutPassword = user.toObject();
+      delete userWithoutPassword.password;
+      return res.status(200).send(sendResponse(true, { user: userWithoutPassword, token }, "Logged in successfully"));
+    }
 
-    const userWithoutPassword = user.toObject();
-    delete userWithoutPassword.password;
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
 
-    res.status(200).send(sendResponse(true, { user: userWithoutPassword, token }, "Logged in successfully"));
+    // Store the hash and expiry (10 minutes)
+    user.otp = hashedOtp;
+    user.otpExpiresAt = Date.now() + 10 * 60 * 1000;
+    await user.save();
+
+    // Send the plain numeric OTP via email
+    await sendOTPEmail(email, otp);  // make sure sendOTPEmail sends the number, not the hash
+
+    return res.status(200).send(sendResponse(true, { email: user.email, isVerified: false }, "Verification required – OTP sent to your email"));
   } catch (err) {
     console.error(err);
-    res.status(500).send(sendResponse(false, null, err));
+    res.status(500).send(sendResponse(false, null, err.message));
   }
 };
 
