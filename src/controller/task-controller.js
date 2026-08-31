@@ -50,7 +50,7 @@ const getTasks = async (req, res) => {
 const createTask = async (req, res) => {
   try {
     const userId = req.user.id;
-    let { title, category, description, status, assignees, subTasks } = req.body;
+    let { title, category, description, dueDate, priority, status, assignees, subTasks } = req.body;
 
     // assignees and subTasks might be sent as JSON strings
     if (typeof assignees === "string") {
@@ -89,6 +89,8 @@ const createTask = async (req, res) => {
       title,
       category: category || "",
       description: description || "",
+      dueDate: dueDate,
+      priority: priority,
       status: status || "in-progress",
       assignees: assignees || [],
       subTasks: subTasks || [],
@@ -133,7 +135,7 @@ const updateTask = async (req, res) => {
     }
 
     // --- Parse text/JSON fields ---
-    let { title, category, description, status, assignees, subTasks, removeAttachments } = req.body;
+    let { title, category, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
 
     const parseJSONField = (field, fieldName) => {
       if (typeof field === 'string') {
@@ -197,6 +199,8 @@ const updateTask = async (req, res) => {
     if (title !== undefined) task.title = title;
     if (category !== undefined) task.category = category;
     if (description !== undefined) task.description = description;
+    if (dueDate !== undefined) task.dueDate = dueDate;
+    if (priority !== undefined) task.priority = priority;
     if (status !== undefined) task.status = status;
     if (assignees !== undefined) task.assignees = assignees;
     if (subTasks !== undefined) task.subTasks = subTasks;
