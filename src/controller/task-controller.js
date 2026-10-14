@@ -1,12 +1,25 @@
+const path = require("path");
+const axios = require("axios");
 const Task = require("../models/TaskModel");
 const { sendResponse } = require("../helper/sendResponse");
 const cloudinary = require("../config/cloudinaryConfig");
 
 const computeProgress = (subTasks) => {
   const total = subTasks.length;
-  const completed = subTasks.filter((st) => st.completed).length;
+  const completed = subTasks.filter((st) => st.isCompleted).length;
   const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
   return { percentage, completed, total };
+};
+
+const getTaskProgressData = (task) => {
+  const progress = computeProgress(task.subTasks || []);
+
+  return {
+    ...task.toObject(),
+    progressPercentage: progress.percentage,
+    completedSubtasks: progress.completed,
+    totalSubtasks: progress.total,
+  };
 };
 
 const getTasks = async (req, res) => {
@@ -43,6 +56,46 @@ const getTasks = async (req, res) => {
     return res.status(200).send(sendResponse(true, tasksWithProgress, "Tasks fetched"));
   } catch (error) {
     console.error(error);
+    return res.status(500).send(sendResponse(false, null, error.message));
+  }
+};
+
+const getTaskById = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const taskId = req.params.id;
+
+    const task = await Task.findOne(
+      {
+        _id: taskId,
+        user: userId,
+      }
+    ).populate(
+      "assignees", "name profile_picture email"
+    ).populate(
+      "comments.user", "name profile_picture"
+    );
+
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    };
+
+    const taskData = task.toObject();
+    const progress = computeProgress(task.subTasks || []);
+
+    return res.status(200).send(sendResponse(
+      true,
+      {
+        ...taskData,
+        progressPercentage: progress.percentage,
+        completedSubtasks: progress.completed,
+        totalSubtasks: progress.total,
+        commentCount: task.comments.length,
+        attachmentCount: task.attachments.length,
+      },
+      "Task details fetched"
+    ));
+  } catch (error) {
     return res.status(500).send(sendResponse(false, null, error.message));
   }
 };
@@ -101,10 +154,9 @@ const createTask = async (req, res) => {
 
     await newTask.populate("assignees", "name profile_picture email");
     await newTask.populate("comments.user", "name profile_picture");
-    const progress = computeProgress(newTask.subTasks);
 
     return res.status(201).send(
-      sendResponse(true, { ...newTask.toObject(), ...progress }, "Task created")
+      sendResponse(true, { ...newTask.toObject(), ...getTaskProgressData(newTask) }, "Task created")
     );
   } catch (error) {
     console.error(error);
@@ -113,6 +165,43 @@ const createTask = async (req, res) => {
         req.files.map((file) => cloudinary.uploader.destroy(file.filename))
       ).catch((cleanupErr) => console.error("Cleanup failed:", cleanupErr));
     }
+    return res.status(500).send(sendResponse(false, null, error.message));
+  }
+};
+
+const addSubTask = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+    const title = req.body.title?.trim();
+
+    if (!title) {
+      return res.status(400).send(sendResponse(false, null, "Subtask title is required"));
+    };
+
+    const task = await Task.findOne({ _id: id, user: userId, });
+
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    };
+
+    task.subTasks.push({ title });
+
+    // A completed task becomes active when new work is added.
+    if (task.status === "done") {
+      task.status = "in-progress";
+    };
+
+    await task.save();
+
+    return res.status(201).send(
+      sendResponse(
+        true,
+        getTaskProgressData(task),
+        "Subtask added successfully"
+      )
+    );
+  } catch (error) {
     return res.status(500).send(sendResponse(false, null, error.message));
   }
 };
@@ -209,10 +298,8 @@ const updateTask = async (req, res) => {
     await task.populate("assignees", "name profile_picture email");
     await task.populate("comments.user", "name profile_picture");
 
-    const progress = computeProgress(task.subTasks);
-
     return res.status(200).send(
-      sendResponse(true, { ...task.toObject(), ...progress }, "Task updated")
+      sendResponse(true, { ...task.toObject(), ...getTaskProgressData(task) }, "Task updated")
     );
   } catch (error) {
     console.error(error);
@@ -226,19 +313,119 @@ const updateTask = async (req, res) => {
   }
 };
 
+const updateSubTask = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id, subTaskId } = req.params;
+    const { title, isCompleted } = req.body;
+
+    const task = await Task.findOne({ _id: id, user: userId, });
+
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    };
+
+    const subTask = task.subTasks.id(subTaskId);
+
+    if (!subTask) {
+      return res.status(404).send(sendResponse(false, null, "Subtask not found"));
+    } ''
+
+    if (title !== undefined) {
+      if (typeof title !== "string" || !title.trim()) {
+        return res.status(400).send(sendResponse(false, null, "Subtask title is required"));
+      };
+
+      subTask.title = title.trim();
+    };
+
+    if (isCompleted !== undefined) {
+      if (typeof isCompleted !== "boolean") {
+        return res.status(400).send(sendResponse(false, null, "isCompleted must be a boolean"));
+      };
+
+      subTask.isCompleted = isCompleted;
+      subTask.completedAt = isCompleted ? new Date() : null;
+    };
+
+    const allCompleted = task.subTasks.length > 0 && task.subTasks.every((item) => item.isCompleted);
+
+    if (allCompleted) {
+      task.status = "done";
+    } else if (task.status === "done") {
+      task.status = "in-progress";
+    };
+
+    await task.save();
+
+    return res.status(200).send(sendResponse(true, getTaskProgressData(task), "Subtask updated successfully"));
+  } catch (error) {
+    return res.status(500).send(sendResponse(false, null, error.message));
+  }
+};
+
 const deleteTask = async (req, res) => {
   try {
     const userId = req.user.id;
     const taskId = req.params.id;
 
-    const task = await Task.findOneAndDelete({ _id: taskId, user: userId });
+    const task = await Task.findOne({
+      _id: taskId,
+      user: userId,
+    });
+
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
-    }
+    };
+
+    // Delete files from Cloudinary before deleting the task.
+    const attachments = task.attachments || [];
+
+    await Promise.all(attachments.filter(
+      (attachment) => attachment.public_id).map(
+        (attachment) => cloudinary.uploader.destroy(attachment.public_id)
+      )
+    );
+
+    await task.deleteOne();
 
     return res.status(200).send(sendResponse(true, null, "Task deleted"));
   } catch (error) {
-    console.error(error);
+    return res.status(500).send(sendResponse(false, null, error.message));
+  }
+};
+
+const deleteSubTask = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id, subTaskId } = req.params;
+
+    const task = await Task.findOne({ _id: id, user: userId, });
+
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    };
+
+    const subTask = task.subTasks.id(subTaskId);
+
+    if (!subTask) {
+      return res.status(404).send(sendResponse(false, null, "Subtask not found"));
+    };
+
+    subTask.deleteOne();
+
+    const allCompleted = task.subTasks.length > 0 && task.subTasks.every((item) => item.isCompleted);
+
+    if (allCompleted) {
+      task.status = "done";
+    } else if (task.status === "done") {
+      task.status = "in-progress";
+    };
+
+    await task.save();
+
+    return res.status(200).send(sendResponse(true, getTaskProgressData(task), "Subtask deleted successfully"));
+  } catch (error) {
     return res.status(500).send(sendResponse(false, null, error.message));
   }
 };
@@ -247,24 +434,35 @@ const addComment = async (req, res) => {
   try {
     const userId = req.user.id;
     const taskId = req.params.id;
-    const { text } = req.body;
+    const text = req.body.text?.trim();
 
     if (!text) {
       return res.status(400).send(sendResponse(false, null, "Comment text required"));
-    }
+    };
 
-    const task = await Task.findOne({ _id: taskId, user: userId });
+    const task = await Task.findOne({
+      _id: taskId,
+      user: userId,
+    });
+
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
-    }
+    };
 
-    task.comments.push({ user: userId, text });
+    task.comments.push({
+      user: userId,
+      text,
+    });
+
     await task.save();
-
     await task.populate("comments.user", "name profile_picture");
-    return res.status(201).send(sendResponse(true, task.comments, "Comment added"));
+
+    const addedComment = task.comments[task.comments.length - 1];
+
+    return res.status(201).send(
+      sendResponse(true, addedComment, "Comment added")
+    );
   } catch (error) {
-    console.error(error);
     return res.status(500).send(sendResponse(false, null, error.message));
   }
 };
@@ -303,7 +501,7 @@ const addAttachment = async (req, res) => {
 
     return res.status(201).send(sendResponse(true, task.attachments, "Attachments added"));
   } catch (error) {
-    console.error(error);
+    console.error(error.message);
     // Attempt cleanup if error occurs after upload
     if (req.files && req.files.length > 0) {
       await Promise.all(
@@ -314,11 +512,119 @@ const addAttachment = async (req, res) => {
   }
 };
 
+const deleteAttachment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id: taskId, attachmentId } = req.params;
+
+    const task = await Task.findOne({
+      _id: taskId,
+      user: userId,
+    });
+
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    };
+
+    const attachment = task.attachments.id(attachmentId);
+
+    if (!attachment) {
+      return res.status(404).send(sendResponse(false, null, "Attachment not found"));
+    };
+
+    if (attachment.public_id) {
+      await cloudinary.uploader.destroy(attachment.public_id);
+    };
+
+    attachment.deleteOne();
+    await task.save();
+
+    return res.status(200).send(sendResponse(
+      true,
+      task.attachments,
+      "Attachment deleted successfully"
+    ));
+  } catch (error) {
+    return res.status(500).send(sendResponse(false, null, error.message));
+  }
+};
+
+const downloadAttachment = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id: taskId, attachmentId } = req.params;
+
+    const task = await Task.findOne({
+      _id: taskId,
+      user: userId,
+    });
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        message: "Task not found",
+      });
+    }
+
+    const attachment = task.attachments.id(attachmentId);
+
+    if (!attachment) {
+      return res.status(404).json({
+        success: false,
+        message: "Attachment not found",
+      });
+    }
+
+    const filename = path.basename(
+      attachment.filename || "download"
+    );
+
+    const response = await axios.get(attachment.url, {
+      responseType: "stream",
+      timeout: 30000,
+    });
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
+    );
+
+    res.setHeader(
+      "Content-Type",
+      response.headers["content-type"] ||
+      "application/octet-stream"
+    );
+
+    response.data.on("error", (error) => {
+      console.error("File stream error:", error);
+      if (!res.headersSent) res.sendStatus(502);
+      else res.destroy(error);
+    });
+
+    response.data.pipe(res);
+  } catch (error) {
+    console.error("Download attachment error:", error.message);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: "Failed to download attachment",
+      });
+    }
+  }
+};
+
 module.exports = {
   getTasks,
+  getTaskById,
   createTask,
+  addSubTask,
   updateTask,
+  updateSubTask,
   deleteTask,
+  deleteSubTask,
   addComment,
   addAttachment,
+  deleteAttachment,
+  downloadAttachment
 };
