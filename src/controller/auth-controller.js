@@ -13,17 +13,17 @@ const Login = async (req, res) => {
 
     if (!email || !password) {
       return res.status(400).send(sendResponse(false, null, "Email and password are required"));
-    }
+    };
 
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).send(sendResponse(false, null, "User not found"));
-    }
+    };
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).send(sendResponse(false, null, "Invalid credentials"));
-    }
+    };
 
     // If user is verified, proceed with login
     if (user.isVerified) {
@@ -35,7 +35,7 @@ const Login = async (req, res) => {
       const userWithoutPassword = user.toObject();
       delete userWithoutPassword.password;
       return res.status(200).send(sendResponse(true, { user: userWithoutPassword, token }, "Logged in successfully"));
-    }
+    };
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");

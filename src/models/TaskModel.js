@@ -11,9 +11,10 @@ const taskSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    category: {
-      type: String,
-      default: "",
+    project: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Project",
+      required: true
     },
     priority: {
       type: String,

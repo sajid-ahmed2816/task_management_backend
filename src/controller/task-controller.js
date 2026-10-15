@@ -65,12 +65,10 @@ const getTaskById = async (req, res) => {
     const userId = req.user.id;
     const taskId = req.params.id;
 
-    const task = await Task.findOne(
-      {
-        _id: taskId,
-        user: userId,
-      }
-    ).populate(
+    const task = await Task.findOne({
+      _id: taskId,
+      user: userId,
+    }).populate(
       "assignees", "name profile_picture email"
     ).populate(
       "comments.user", "name profile_picture"
@@ -103,7 +101,7 @@ const getTaskById = async (req, res) => {
 const createTask = async (req, res) => {
   try {
     const userId = req.user.id;
-    let { title, category, description, dueDate, priority, status, assignees, subTasks } = req.body;
+    let { title, project, description, dueDate, priority, status, assignees, subTasks } = req.body;
 
     // assignees and subTasks might be sent as JSON strings
     if (typeof assignees === "string") {
@@ -112,14 +110,15 @@ const createTask = async (req, res) => {
       } catch {
         assignees = [];
       }
-    }
+    };
+
     if (typeof subTasks === "string") {
       try {
         subTasks = JSON.parse(subTasks);
       } catch {
         subTasks = [];
       }
-    }
+    };
 
     if (!title) {
       // If title missing, delete uploaded files before responding
@@ -140,7 +139,7 @@ const createTask = async (req, res) => {
     const newTask = new Task({
       user: userId,
       title,
-      category: category || "",
+      project,
       description: description || "",
       dueDate: dueDate,
       priority: priority,
@@ -224,7 +223,7 @@ const updateTask = async (req, res) => {
     }
 
     // --- Parse text/JSON fields ---
-    let { title, category, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
+    let { title, project, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
 
     const parseJSONField = (field, fieldName) => {
       if (typeof field === 'string') {
@@ -248,6 +247,10 @@ const updateTask = async (req, res) => {
       }
       return res.status(400).send(sendResponse(false, null, err.message));
     }
+
+    if (project === undefined) {
+      return res.status(400).send(sendResponse(false, null, "Project is required"));
+    };
 
     // --- Process removals (if any) ---
     if (removeAttachments && Array.isArray(removeAttachments)) {
@@ -286,7 +289,7 @@ const updateTask = async (req, res) => {
 
     // --- Update other fields ---
     if (title !== undefined) task.title = title;
-    if (category !== undefined) task.category = category;
+    if (project !== undefined) task.project = project;
     if (description !== undefined) task.description = description;
     if (dueDate !== undefined) task.dueDate = dueDate;
     if (priority !== undefined) task.priority = priority;
