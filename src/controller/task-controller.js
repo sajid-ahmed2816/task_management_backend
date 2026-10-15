@@ -71,6 +71,8 @@ const getTaskById = async (req, res) => {
     }).populate(
       "assignees", "name profile_picture email"
     ).populate(
+      "project"
+    ).populate(
       "comments.user", "name profile_picture"
     );
 
@@ -102,6 +104,10 @@ const createTask = async (req, res) => {
   try {
     const userId = req.user.id;
     let { title, project, description, dueDate, priority, status, assignees, subTasks } = req.body;
+
+    if (!project) {
+      return res.status(400).send(sendResponse(false, null, "Project is required"));
+    };
 
     // assignees and subTasks might be sent as JSON strings
     if (typeof assignees === "string") {

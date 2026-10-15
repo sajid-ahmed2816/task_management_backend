@@ -1,5 +1,6 @@
 const Project = require("../models/ProjectModel");
 const { sendResponse } = require("../helper/sendResponse");
+const paginate = require("../helper/paginate");
 
 const createProject = async (req, res) => {
   const userId = req.user.id
@@ -42,11 +43,79 @@ const createProject = async (req, res) => {
 const getProjects = async (req, res) => {
   try {
     const userId = req.user.id
+    const { page = 1, limit = 10, startDate, dueDate, search = "" } = req.query;
+    const normalizeArray = (value) => {
+      if (!value) return [];
+      return Array.isArray(value) ? value : [value];
+    };
+
+    const status = normalizeArray(req.query.status ?? req.query["status[]"]);
+    const priority = normalizeArray(req.query.priority ?? req.query["priority[]"]);
+
     let filter = { user: userId };
 
-    const projects = await Project.find(filter).populate("user", "name email phone_number profile_picture").lean();
+    if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
 
-    return res.status(200).send(sendResponse(true, { projects }, "Projects fetched successfully"));
+      filter.startDate = {
+        $gte: start,
+      };
+    };
+
+    // Filter by project due date
+    if (dueDate) {
+      const end = new Date(dueDate);
+      end.setHours(23, 59, 59, 999);
+
+      filter.dueDate = {
+        $lte: end,
+      };
+    };
+
+    // Filter by multiple statuses
+    if (status.length > 0) {
+      filter.status = {
+        $in: status,
+      };
+    };
+
+    // Filter by multiple priorities
+    if (priority.length > 0) {
+      filter.priority = {
+        $in: priority,
+      };
+    };
+
+    // Filter by name search
+    if (search.trim()) {
+      filter.name = {
+        $regex: search.trim(),
+        $options: "i",
+      };
+    };
+
+    const result = await paginate({
+      query: filter,
+      model: Project,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      populate: [{
+        path: "user",
+        select: "name email phone_number profile_picture"
+      }]
+    });
+
+    return res.status(200).send(
+      sendResponse(
+        true,
+        {
+          projects: result.data,
+          pagination: result.pagination
+        },
+        "Projects fetched successfully"
+      )
+    );
   } catch (error) {
     console.log("getProjects ~ error:", error)
     return res.status(500).send(sendResponse(false, null, "Internal server error", error));
