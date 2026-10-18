@@ -1,4 +1,5 @@
 const Project = require("../models/ProjectModel");
+const Task = require("../models/TaskModel");
 const { sendResponse } = require("../helper/sendResponse");
 const paginate = require("../helper/paginate");
 
@@ -41,8 +42,8 @@ const createProject = async (req, res) => {
 };
 
 const getProjects = async (req, res) => {
+  const userId = req.user.id
   try {
-    const userId = req.user.id
     const { page = 1, limit = 10, startDate, dueDate, search = "" } = req.query;
     const normalizeArray = (value) => {
       if (!value) return [];
@@ -54,6 +55,7 @@ const getProjects = async (req, res) => {
 
     let filter = { user: userId };
 
+    // Filter by project start date
     if (startDate) {
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
@@ -95,11 +97,13 @@ const getProjects = async (req, res) => {
       };
     };
 
+    const finalLimit = limit === "all" ? Number.MAX_SAFE_INTEGER : parseInt(limit);
+
     const result = await paginate({
       query: filter,
       model: Project,
       page: parseInt(page),
-      limit: parseInt(limit),
+      limit: finalLimit,
       populate: [{
         path: "user",
         select: "name email phone_number profile_picture"
@@ -117,34 +121,37 @@ const getProjects = async (req, res) => {
       )
     );
   } catch (error) {
-    console.log("getProjects ~ error:", error)
     return res.status(500).send(sendResponse(false, null, "Internal server error", error));
   };
 };
 
 const getProjectById = async (req, res) => {
+  const userId = req.user.id;
   try {
-    const userId = req.user.id;
     const projectId = req.params.id;
 
-    const project = await Project.findOne({
+    const projectData = await Project.findOne({
       _id: projectId,
       user: userId
     }).populate("user", "name email phone_number profile_picture");
 
-    if (!project) {
+    if (!projectData) {
       return res.status(404).send(sendResponse(false, null, "Project not found"));
     };
 
-    return res.status(200).send(sendResponse(true, project, "Project fetched successfully"));
+    const task = await Task.find({ isDeleted: false, project: projectId }).lean();
+    const project = projectData.toObject();
+    const obj = { ...project, task };
+
+    return res.status(200).send(sendResponse(true, obj, "Project fetched successfully"));
   } catch (error) {
     return res.status(500).send(sendResponse(false, null, "Internal server error", error));
   };
 };
 
 const updateProject = async (req, res) => {
+  const userId = req.user.id;
   try {
-    const userId = req.user.id;
     const projectId = req.params.id;
 
     const project = await Project.findOne({ _id: projectId, user: userId });
@@ -175,14 +182,30 @@ const updateProject = async (req, res) => {
 };
 
 const deleteProject = async (req, res) => {
+  const userId = req.user.id;
   try {
-    const userId = req.user.id;
     const projectId = req.params.id;
 
-    const project = await Project.findOne({ _id: projectId, user: userId });
+    const project = await Project.findOne({ _id: projectId, user: userId, isDeleted: false });
 
     if (!project) {
       return res.status(404).send(sendResponse(false, null, "Project not found"));
+    };
+
+    const task = await Task.exists({ user: userId, project: projectId, isDeleted: false });
+
+    if (task) {
+      await Task.updateMany(
+        { user: userId, project: projectId, isDeleted: false },
+        {
+          $set: {
+            isDeleted: true
+          }
+        }
+      );
+      project.isDeleted = true;
+      await project.save();
+      return res.status(200).send(sendResponse(true, null, "Project and its task deleted successfully"));
     };
 
     await project.deleteOne();

@@ -37,6 +37,10 @@ const projectSchema = new mongoose.Schema({
   },
   link: {
     type: String
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true

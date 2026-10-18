@@ -27,7 +27,7 @@ const getTasks = async (req, res) => {
     const userId = req.user.id;
     const { status } = req.query;
 
-    let filter = { user: userId };
+    let filter = { user: userId, isDeleted: false };
     if (status && ["in-progress", "paused", "done"].includes(status)) {
       filter.status = status;
     }
@@ -93,7 +93,7 @@ const getTaskById = async (req, res) => {
         commentCount: task.comments.length,
         attachmentCount: task.attachments.length,
       },
-      "Task details fetched"
+      "Task fetched successfully"
     ));
   } catch (error) {
     return res.status(500).send(sendResponse(false, null, error.message));
