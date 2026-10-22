@@ -31,18 +31,18 @@ const upload = multer({ storage });
 
 router.use(authenticate);
 
-router.get("/get", getTasks);
-router.get("/:id", getTaskById);
-router.get("/:id/attachments/:attachmentId/download", downloadAttachment);
-router.post("/add", upload.array("files", 10), createTask);
-router.post("/:id/subtasks", addSubTask);
-router.patch("/update/:id", upload.array("files", 10), updateTask);
-router.patch("/:id/subtasks/:subTaskId", updateSubTask);
-router.delete("/delete/:id", deleteTask);
-router.delete("/:id/subtasks/:subTaskId", deleteSubTask);
-router.post("/:id/comments", addComment);
-router.post("/:id/attachments", upload.array("files", 10), addAttachment);
-router.delete("/:id/attachments/:attachmentId", deleteAttachment);
+router.get("/:workspaceId/get", getTasks);
+router.get("/:workspaceId/:id", getTaskById);
+router.get("/:workspaceId/:id/attachments/:attachmentId/download", downloadAttachment);
+router.post("/:workspaceId/add", upload.array("files", 10), createTask);
+router.post("/:workspaceId/:id/subtasks", addSubTask);
+router.patch("/:workspaceId/update/:id", upload.array("files", 10), updateTask);
+router.patch("/:workspaceId/:id/subtasks/:subTaskId", updateSubTask);
+router.delete("/:workspaceId/delete/:id", deleteTask);
+router.delete("/:workspaceId/:id/subtasks/:subTaskId", deleteSubTask);
+router.post("/:workspaceId/:id/comments", addComment);
+router.post("/:workspaceId/:id/attachments", upload.array("files", 10), addAttachment);
+router.delete("/:workspaceId/:id/attachments/:attachmentId", deleteAttachment);
 
 
 module.exports = router;

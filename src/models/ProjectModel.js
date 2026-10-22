@@ -27,7 +27,7 @@ const projectSchema = new mongoose.Schema({
     default: "medium",
     enum: ["low", "medium", "high", "urgent"]
   },
-  user: {
+  createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: true
@@ -41,6 +41,11 @@ const projectSchema = new mongoose.Schema({
   isDeleted: {
     type: Boolean,
     default: false
+  },
+  workspace: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Workspace",
+    required: true
   }
 }, {
   timestamps: true

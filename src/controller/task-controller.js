@@ -1,6 +1,9 @@
+const mongoose = require("mongoose");
 const path = require("path");
 const axios = require("axios");
 const Task = require("../models/TaskModel");
+const Project = require("../models/ProjectModel");
+const WorkspaceMembership = require("../models/WorkspaceMembershipModel");
 const { sendResponse } = require("../helper/sendResponse");
 const cloudinary = require("../config/cloudinaryConfig");
 
@@ -23,14 +26,31 @@ const getTaskProgressData = (task) => {
 };
 
 const getTasks = async (req, res) => {
+  const userId = req.user.id;
+  const { status } = req.query;
+  const { workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const { status } = req.query;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
 
-    let filter = { user: userId, isDeleted: false };
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    let filter = { workspace: workspaceId, isDeleted: false };
+
     if (status && ["in-progress", "paused", "done"].includes(status)) {
       filter.status = status;
-    }
+    };
 
     const tasks = await Task.find(filter).populate("assignees", "name profile_picture").lean(); // lean to modify objects
 
@@ -61,13 +81,35 @@ const getTasks = async (req, res) => {
 };
 
 const getTaskById = async (req, res) => {
+  const userId = req.user.id;
+  const taskId = req.params.id;
+  const { workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const taskId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
 
     const task = await Task.findOne({
       _id: taskId,
-      user: userId,
+      workspace: workspaceId,
+      isDeleted: false
     }).populate(
       "assignees", "name profile_picture email"
     ).populate(
@@ -96,17 +138,52 @@ const getTaskById = async (req, res) => {
       "Task fetched successfully"
     ));
   } catch (error) {
-    return res.status(500).send(sendResponse(false, null, error.message));
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
   }
 };
 
 const createTask = async (req, res) => {
+  const userId = req.user.id;
+  const { workspaceId } = req.params;
   try {
-    const userId = req.user.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
     let { title, project, description, dueDate, priority, status, assignees, subTasks } = req.body;
 
-    if (!project) {
-      return res.status(400).send(sendResponse(false, null, "Project is required"));
+    const formattedDueDate = new Date(dueDate);
+
+    if (!dueDate || Number.isNaN(formattedDueDate.getTime())) {
+      return res.status(400).send(sendResponse(false, null, "Invalid date type"));
+    };
+
+    const mongooseProjectId = mongoose.Types.ObjectId.isValid(project);
+
+    if (!mongooseProjectId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid project Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const projectExists = await Project.findOne({
+      _id: project,
+      workspace: workspaceId,
+      isDeleted: false
+    });
+
+    if (!projectExists) {
+      return res.status(404).send(sendResponse(false, null, "Project not found"));
     };
 
     // assignees and subTasks might be sent as JSON strings
@@ -126,7 +203,7 @@ const createTask = async (req, res) => {
       }
     };
 
-    if (!title) {
+    if (typeof title !== "string" || !title.trim()) {
       // If title missing, delete uploaded files before responding
       if (req.files && req.files.length > 0) {
         await Promise.all(
@@ -136,6 +213,14 @@ const createTask = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Title is required"));
     };
 
+    if (!["in-progress", "paused", "done"].includes(status)) {
+      return res.status(400).send(sendResponse(false, null, "Invaild status value"));
+    };
+
+    if (!["low", "medium", "high"].includes(priority)) {
+      return res.status(400).send(sendResponse(false, null, "Invaild priority value"));
+    };
+
     const attachments = (req.files || []).map((file) => ({
       filename: file.originalname,
       url: file.path,
@@ -143,16 +228,17 @@ const createTask = async (req, res) => {
     }));
 
     const newTask = new Task({
-      user: userId,
-      title,
+      createdBy: userId,
+      title: title.trim(),
       project,
       description: description || "",
-      dueDate: dueDate,
+      dueDate: formattedDueDate,
       priority: priority,
-      status: status || "in-progress",
+      status: status,
       assignees: assignees || [],
       subTasks: subTasks || [],
-      attachments
+      attachments,
+      workspace: workspaceId
     });
 
     await newTask.save();
@@ -175,22 +261,50 @@ const createTask = async (req, res) => {
 };
 
 const addSubTask = async (req, res) => {
+  const userId = req.user.id;
+  const { id, workspaceId } = req.params;
+  const { title } = req.body
   try {
-    const userId = req.user.id;
-    const { id } = req.params;
-    const title = req.body.title?.trim();
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(id);
 
-    if (!title) {
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    if (typeof title !== "string") {
+      return res.status(400).send(sendResponse(false, null, "Invalid subtask title type"));
+    };
+
+    if (!title.trim()) {
       return res.status(400).send(sendResponse(false, null, "Subtask title is required"));
     };
 
-    const task = await Task.findOne({ _id: id, user: userId, });
+    const task = await Task.findOne({
+      _id: id,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
 
-    task.subTasks.push({ title });
+    task.subTasks.push({ title: title.trim() });
 
     // A completed task becomes active when new work is added.
     if (task.status === "done") {
@@ -212,24 +326,43 @@ const addSubTask = async (req, res) => {
 };
 
 const updateTask = async (req, res) => {
-  const newlyUploadedPublicIds = [];
+  const userId = req.user.id;
+  const taskId = req.params.id;
+  const { workspaceId } = req.params;
+  let { title, project, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
+  const newlyUploadedPublicIds = (req.files || []).map(file => file.filename);
+  let taskSaved = false;
   try {
-    const userId = req.user.id;
-    const taskId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
 
-    const task = await Task.findOne({ _id: taskId, user: userId });
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const task = await Task.findOne({
+      _id: taskId,
+      workspace: workspaceId,
+      isDeleted: false
+    });
+
     if (!task) {
-      // Cleanup uploaded files if task doesn't exist
-      if (req.files && req.files.length > 0) {
-        await Promise.all(
-          req.files.map(file => cloudinary.uploader.destroy(file.filename))
-        );
-      }
       return res.status(404).send(sendResponse(false, null, "Task not found"));
-    }
-
-    // --- Parse text/JSON fields ---
-    let { title, project, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
+    };
 
     const parseJSONField = (field, fieldName) => {
       if (typeof field === 'string') {
@@ -247,63 +380,98 @@ const updateTask = async (req, res) => {
       if (subTasks !== undefined) subTasks = parseJSONField(subTasks, 'subTasks');
       if (removeAttachments !== undefined) removeAttachments = parseJSONField(removeAttachments, 'removeAttachments');
     } catch (err) {
-      // Cleanup uploaded files before sending error
-      if (req.files && req.files.length > 0) {
-        await Promise.all(req.files.map(f => cloudinary.uploader.destroy(f.filename)));
-      }
       return res.status(400).send(sendResponse(false, null, err.message));
     }
 
-    if (project === undefined) {
-      return res.status(400).send(sendResponse(false, null, "Project is required"));
+    if (removeAttachments !== undefined && !Array.isArray(removeAttachments)) {
+      return res.status(400).send(sendResponse(false, null, "removeAttachments must be an array"));
     };
 
-    // --- Process removals (if any) ---
-    if (removeAttachments && Array.isArray(removeAttachments)) {
-      const removeIds = removeAttachments.filter(id => typeof id === 'string');
+    let attachmentsToDelete = [];
 
-      // Find the attachments to delete from Cloudinary
-      const attachmentsToDelete = task.attachments.filter(att =>
+    if (Array.isArray(removeAttachments)) {
+      const removeIds = removeAttachments.filter(
+        id => typeof id === "string"
+      );
+
+      attachmentsToDelete = task.attachments.filter(att =>
         removeIds.includes(att._id.toString())
       );
 
-      // Delete from Cloudinary in parallel (FIX: now actually calls destroy)
-      await Promise.all(
-        attachmentsToDelete.map(att =>
-          cloudinary.uploader.destroy(att.public_id) // uses stored public_id
-        )
-      );
-
-      // Remove these attachments from the task array
       task.attachments = task.attachments.filter(
         att => !removeIds.includes(att._id.toString())
       );
     }
 
-    // --- Handle new file uploads ---
     if (req.files && req.files.length > 0) {
       const newAttachments = req.files.map(file => ({
         filename: file.originalname,
         url: file.path,
-        public_id: file.filename,  // FIX: added public_id
+        public_id: file.filename,
       }));
       task.attachments.push(...newAttachments);
-
-      // Track new public IDs for potential cleanup on failure
-      req.files.forEach(file => newlyUploadedPublicIds.push(file.filename));
     }
 
     // --- Update other fields ---
-    if (title !== undefined) task.title = title;
-    if (project !== undefined) task.project = project;
-    if (description !== undefined) task.description = description;
-    if (dueDate !== undefined) task.dueDate = dueDate;
-    if (priority !== undefined) task.priority = priority;
-    if (status !== undefined) task.status = status;
+    if (title !== undefined) {
+      if (typeof title !== "string") {
+        return res.status(400).send(sendResponse(false, null, "Invalid title type"));
+      };
+      if (!title.trim()) {
+        return res.status(400).send(sendResponse(false, null, "Title cannot be empty"));
+      }
+      task.title = title.trim();
+    };
+    if (description !== undefined) {
+      if (typeof description !== "string") {
+        return res.status(400).send(sendResponse(false, null, "Invalid description type"));
+      };
+      task.description = description.trim();
+    };
+    if (project !== undefined) {
+      const mongooseProjectId = mongoose.Types.ObjectId.isValid(project);
+      if (!mongooseProjectId) {
+        return res.status(400).send(sendResponse(false, null, "Invalid project Id"));
+      };
+      const projectExists = await Project.findOne({
+        _id: project,
+        workspace: workspaceId,
+        isDeleted: false
+      });
+      if (!projectExists) {
+        return res.status(404).send(sendResponse(false, null, "Project not found"));
+      };
+      task.project = project
+    };
+    if (dueDate !== undefined) {
+      const newDate = new Date(dueDate);
+      if (Number.isNaN(newDate.getTime())) {
+        return res.status(400).send(sendResponse(false, null, "Invalid date type"));
+      }
+      task.dueDate = newDate
+    };
+    if (priority !== undefined) {
+      if (!["low", "medium", "high"].includes(priority)) {
+        return res.status(400).send(sendResponse(false, null, "Invalid priority value"));
+      };
+      task.priority = priority
+    };
+    if (status !== undefined) {
+      if (!["in-progress", "paused", "done"].includes(status)) {
+        return res.status(400).send(sendResponse(false, null, "Invalid status value"));
+      };
+      task.status = status
+    };
     if (assignees !== undefined) task.assignees = assignees;
     if (subTasks !== undefined) task.subTasks = subTasks;
 
     await task.save();
+    taskSaved = true;
+    await Promise.allSettled(
+      attachmentsToDelete.map(att =>
+        cloudinary.uploader.destroy(att.public_id)
+      )
+    );
     await task.populate("assignees", "name profile_picture email");
     await task.populate("comments.user", "name profile_picture");
 
@@ -311,24 +479,54 @@ const updateTask = async (req, res) => {
       sendResponse(true, { ...task.toObject(), ...getTaskProgressData(task) }, "Task updated")
     );
   } catch (error) {
-    console.error(error);
-    // Cleanup newly uploaded files if an error happens after upload but before save
-    if (newlyUploadedPublicIds.length > 0) {
-      await Promise.all(
-        newlyUploadedPublicIds.map(id => cloudinary.uploader.destroy(id))
-      ).catch(e => console.error("Cleanup error:", e));
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
+  } finally {
+    if (!taskSaved && newlyUploadedPublicIds.length > 0) {
+      await Promise.allSettled(
+        newlyUploadedPublicIds.map(id =>
+          cloudinary.uploader.destroy(id)
+        )
+      );
     }
-    return res.status(500).send(sendResponse(false, null, error.message));
-  }
+  };
 };
 
 const updateSubTask = async (req, res) => {
+  const userId = req.user.id;
+  const { id, subTaskId, workspaceId } = req.params;
+  const { title, isCompleted } = req.body;
   try {
-    const userId = req.user.id;
-    const { id, subTaskId } = req.params;
-    const { title, isCompleted } = req.body;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(id);
+    const mongooseSubTaskId = mongoose.Types.ObjectId.isValid(subTaskId);
 
-    const task = await Task.findOne({ _id: id, user: userId, });
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    if (!mongooseSubTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Subtask Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const task = await Task.findOne({
+      _id: id,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
@@ -338,13 +536,15 @@ const updateSubTask = async (req, res) => {
 
     if (!subTask) {
       return res.status(404).send(sendResponse(false, null, "Subtask not found"));
-    } ''
+    };
 
     if (title !== undefined) {
-      if (typeof title !== "string" || !title.trim()) {
-        return res.status(400).send(sendResponse(false, null, "Subtask title is required"));
+      if (typeof title !== "string") {
+        return res.status(400).send(sendResponse(false, null, "Invalid title type"));
       };
-
+      if (!title.trim()) {
+        return res.status(400).send(sendResponse(false, null, "Title is required"));
+      };
       subTask.title = title.trim();
     };
 
@@ -352,7 +552,6 @@ const updateSubTask = async (req, res) => {
       if (typeof isCompleted !== "boolean") {
         return res.status(400).send(sendResponse(false, null, "isCompleted must be a boolean"));
       };
-
       subTask.isCompleted = isCompleted;
       subTask.completedAt = isCompleted ? new Date() : null;
     };
@@ -370,33 +569,54 @@ const updateSubTask = async (req, res) => {
     return res.status(200).send(sendResponse(true, getTaskProgressData(task), "Subtask updated successfully"));
   } catch (error) {
     return res.status(500).send(sendResponse(false, null, error.message));
-  }
+  };
 };
 
 const deleteTask = async (req, res) => {
+  const userId = req.user.id;
+  const { id: taskId, workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const taskId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
 
     const task = await Task.findOne({
       _id: taskId,
-      user: userId,
+      workspace: workspaceId,
+      isDeleted: false
     });
 
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
 
-    // Delete files from Cloudinary before deleting the task.
     const attachments = task.attachments || [];
 
-    await Promise.all(attachments.filter(
-      (attachment) => attachment.public_id).map(
-        (attachment) => cloudinary.uploader.destroy(attachment.public_id)
+    await task.deleteOne();
+
+    await Promise.allSettled(attachments
+      .filter(attachment => attachment.public_id)
+      .map(attachment =>
+        cloudinary.uploader.destroy(attachment.public_id)
       )
     );
-
-    await task.deleteOne();
 
     return res.status(200).send(sendResponse(true, null, "Task deleted"));
   } catch (error) {
@@ -405,11 +625,40 @@ const deleteTask = async (req, res) => {
 };
 
 const deleteSubTask = async (req, res) => {
+  const userId = req.user.id;
+  const { id, subTaskId, workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const { id, subTaskId } = req.params;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(id);
+    const mongooseSubTaskId = mongoose.Types.ObjectId.isValid(subTaskId);
 
-    const task = await Task.findOne({ _id: id, user: userId, });
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    if (!mongooseSubTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Subtask Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const task = await Task.findOne({
+      _id: id,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
@@ -440,18 +689,43 @@ const deleteSubTask = async (req, res) => {
 };
 
 const addComment = async (req, res) => {
+  const userId = req.user.id;
+  const { id: taskId, workspaceId } = req.params;
+  const { text } = req.body;
   try {
-    const userId = req.user.id;
-    const taskId = req.params.id;
-    const text = req.body.text?.trim();
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
 
-    if (!text) {
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    if (typeof text !== "string") {
+      return res.status(400).send(sendResponse(false, null, "Invalid text type"));
+    };
+
+    if (!text.trim()) {
       return res.status(400).send(sendResponse(false, null, "Comment text required"));
     };
 
     const task = await Task.findOne({
       _id: taskId,
-      user: userId,
+      workspace: workspaceId,
+      isDeleted: false
     });
 
     if (!task) {
@@ -460,7 +734,7 @@ const addComment = async (req, res) => {
 
     task.comments.push({
       user: userId,
-      text,
+      text: text.trim(),
     });
 
     await task.save();
@@ -477,21 +751,37 @@ const addComment = async (req, res) => {
 };
 
 const addAttachment = async (req, res) => {
+  const userId = req.user.id;
+  const { id: taskId, workspaceId } = req.params;
+  const newlyUploadedPublicIds = (req.files || []).map(file => file.filename);
+  let taskSaved = false;
   try {
-    const userId = req.user.id;
-    const taskId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
 
-    // Find the task owned by the user
-    const task = await Task.findOne({ _id: taskId, user: userId });
-    if (!task) {
-      // Clean up any uploaded files before sending error
-      if (req.files && req.files.length > 0) {
-        await Promise.all(
-          req.files.map((file) => cloudinary.uploader.destroy(file.filename))
-        ).catch((e) => console.error("Cleanup failed", e));
-      }
-      return res.status(404).send(sendResponse(false, null, "Task not found"));
-    }
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const task = await Task.findOne({
+      _id: taskId,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     // Build new attachments from uploaded files
     const newAttachments = (req.files || []).map((file) => ({
@@ -507,28 +797,56 @@ const addAttachment = async (req, res) => {
     // Add them to the task's attachments array
     task.attachments.push(...newAttachments);
     await task.save();
+    taskSaved = true;
 
     return res.status(201).send(sendResponse(true, task.attachments, "Attachments added"));
   } catch (error) {
-    console.error(error.message);
-    // Attempt cleanup if error occurs after upload
-    if (req.files && req.files.length > 0) {
-      await Promise.all(
-        req.files.map((file) => cloudinary.uploader.destroy(file.filename))
-      ).catch((e) => console.error("Cleanup failed", e));
+    return res.status(500).send(sendResponse(false, null, "INternal server error"));
+  } finally {
+    if (!taskSaved && newlyUploadedPublicIds.length > 0) {
+      await Promise.allSettled(
+        newlyUploadedPublicIds.map(id =>
+          cloudinary.uploader.destroy(id)
+        )
+      );
     }
-    return res.status(500).send(sendResponse(false, null, error.message));
   }
 };
 
 const deleteAttachment = async (req, res) => {
+  const userId = req.user.id;
+  const { id: taskId, attachmentId, workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const { id: taskId, attachmentId } = req.params;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
+    const mongooseAttachmentId = mongoose.Types.ObjectId.isValid(attachmentId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    if (!mongooseAttachmentId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Attachment Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
 
     const task = await Task.findOne({
       _id: taskId,
-      user: userId,
+      workspace: workspaceId,
+      isDeleted: false
     });
 
     if (!task) {
@@ -541,12 +859,14 @@ const deleteAttachment = async (req, res) => {
       return res.status(404).send(sendResponse(false, null, "Attachment not found"));
     };
 
-    if (attachment.public_id) {
-      await cloudinary.uploader.destroy(attachment.public_id);
-    };
+    const publicId = attachment.public_id;
 
     attachment.deleteOne();
     await task.save();
+
+    if (publicId) {
+      await cloudinary.uploader.destroy(attachment.public_id);
+    };
 
     return res.status(200).send(sendResponse(
       true,
@@ -559,13 +879,39 @@ const deleteAttachment = async (req, res) => {
 };
 
 const downloadAttachment = async (req, res) => {
+  const userId = req.user.id;
+  const { id: taskId, attachmentId, workspaceId } = req.params;
   try {
-    const userId = req.user.id;
-    const { id: taskId, attachmentId } = req.params;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseTaskId = mongoose.Types.ObjectId.isValid(taskId);
+    const mongooseAttachmentId = mongoose.Types.ObjectId.isValid(attachmentId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseTaskId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Task Id"))
+    };
+
+    if (!mongooseAttachmentId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Attachment Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
 
     const task = await Task.findOne({
       _id: taskId,
-      user: userId,
+      workspace: workspaceId,
+      isDeleted: false
     });
 
     if (!task) {
