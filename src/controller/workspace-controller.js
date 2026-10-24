@@ -2,7 +2,11 @@
 const mongoose = require("mongoose");
 const Workspace = require("../models/WorkspaceModel");
 const WorkspaceMembership = require("../models/WorkspaceMembershipModel");
+const WorkspaceInvitation = require("../models/WorkspaceInvitationModel");
+const Project = require("../models/ProjectModel");
+const Task = require("../models/TaskModel");
 const { sendResponse } = require("../helper/sendResponse");
+const { destroyCloudinaryAssets } = require("../helper/cloudinaryAssets");
 
 const isValidId = (id) => mongoose.isValidObjectId(id);
 
@@ -189,16 +193,45 @@ const deleteWorkspace = async (req, res) => {
       return res.status(403).send(sendResponse(false, null, "Active owner membership required"));
     };
 
+    const projects = await Project.find({ workspace: workspaceId }).select("_id").lean();
+    const projectIds = projects.map((project) => project._id);
+    const taskFilter = projectIds.length > 0
+      ? { $or: [{ workspace: workspaceId }, { project: { $in: projectIds } }] }
+      : { workspace: workspaceId };
+    const tasks = await Task.find(taskFilter).select("attachments").lean();
+    const attachments = tasks.flatMap((task) => task.attachments || []);
+    const { failures } = await destroyCloudinaryAssets(attachments);
+
+    if (failures.length > 0) {
+      console.error("Workspace attachment cleanup failed:", failures);
+      return res.status(502).send(sendResponse(false, null, "Workspace files could not all be deleted. The workspace and its records were kept; retry the deletion."));
+    }
+
     session = await mongoose.startSession();
 
     await session.withTransaction(async () => {
-      await Workspace.deleteOne(
-        { _id: workspaceId },
+      await Task.deleteMany(
+        taskFilter,
+        { session }
+      );
+
+      await Project.deleteMany(
+        { workspace: workspaceId },
+        { session }
+      );
+
+      await WorkspaceInvitation.deleteMany(
+        { workspace: workspaceId },
         { session }
       );
 
       await WorkspaceMembership.deleteMany(
         { workspace: workspaceId },
+        { session }
+      );
+
+      await Workspace.deleteOne(
+        { _id: workspaceId },
         { session }
       );
     });

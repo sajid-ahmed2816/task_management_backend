@@ -4,6 +4,7 @@ const authMiddleware = require("../middleware/index");
 const {
   listWorkspaceMembers,
   listWorkspaceInvitations,
+  previewWorkspaceInvitation,
   createWorkspaceInvitation,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,
@@ -13,6 +14,7 @@ const {
 
 router.use(authMiddleware);
 
+router.get("/invitations/preview", previewWorkspaceInvitation);
 router.get("/:workspaceId/members/get", listWorkspaceMembers);
 router.get("/:workspaceId/invitations/get", listWorkspaceInvitations);
 router.post("/:workspaceId/invitations/invite", createWorkspaceInvitation);

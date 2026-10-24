@@ -61,6 +61,10 @@ const taskSchema = new mongoose.Schema(
         filename: String,
         url: String,
         public_id: String,
+        resource_type: {
+          type: String,
+          enum: ["image", "raw", "video"],
+        },
       },
     ],
     subTasks: [

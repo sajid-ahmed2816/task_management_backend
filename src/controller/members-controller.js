@@ -118,6 +118,68 @@ const listWorkspaceInvitations = async (req, res) => {
   }
 };
 
+const previewWorkspaceInvitation = async (req, res) => {
+  const authenticatedEmail = normalizeEmail(req.user?.email);
+  const token = String(req.query?.token || "");
+
+  if (!authenticatedEmail) {
+    return res.status(401).send(sendResponse(false, null, "Authenticated email is required"));
+  };
+
+  if (!token || token.length > 256) {
+    return res.status(400).send(sendResponse(false, null, "A valid invitation token is required"));
+  };
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const invitation = await WorkspaceInvitation.findOne({ tokenHash })
+      .populate({ path: "workspace", select: "name" })
+      .populate({ path: "invitedBy", select: "name email" });
+
+    if (!invitation) {
+      return res.status(404).send(sendResponse(false, null, "Invitation link is invalid or has already been used"));
+    };
+
+    if (normalizeEmail(invitation.email) !== authenticatedEmail) {
+      return res.status(403).send(sendResponse(false, null, "Sign in with the email address that received this invitation"));
+    };
+
+    if (invitation.status !== "Pending") {
+      return res.status(410).send(sendResponse(false, null, "This invitation is no longer active"));
+    };
+
+    if (invitation.expiresAt <= new Date()) {
+      invitation.status = "Expired";
+      await invitation.save();
+      return res.status(410).send(sendResponse(false, null, "This invitation has expired"));
+    };
+
+    if (!invitation.workspace) {
+      return res.status(404).send(sendResponse(false, null, "The invited workspace no longer exists"));
+    };
+
+    const data = {
+      invitationId: invitation._id,
+      workspace: {
+        id: invitation.workspace._id,
+        name: invitation.workspace.name,
+      },
+      invitedBy: invitation.invitedBy ? {
+        name: invitation.invitedBy.name,
+        email: invitation.invitedBy.email,
+      } : null,
+      email: invitation.email,
+      expiresAt: invitation.expiresAt,
+      status: invitation.status,
+    };
+
+    return res.status(200).send(sendResponse(true, data, "Invitation preview fetched successfully"));
+  } catch (error) {
+    console.error("Preview workspace invitation failed:", error);
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
+  };
+};
+
 const createWorkspaceInvitation = async (req, res) => {
   const userId = req.user?.id;
 
@@ -447,6 +509,7 @@ const removeWorkspaceMember = async (req, res) => {
 module.exports = {
   listWorkspaceMembers,
   listWorkspaceInvitations,
+  previewWorkspaceInvitation,
   createWorkspaceInvitation,
   resendWorkspaceInvitation,
   revokeWorkspaceInvitation,

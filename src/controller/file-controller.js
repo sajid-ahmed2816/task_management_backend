@@ -11,12 +11,15 @@ const storage = new CloudinaryStorage({
 });
 
 // Allow up to 10 files with the field name "files"
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: { files: 10, fileSize: 25 * 1024 * 1024 },
+});
 
 const uploadFiles = (req, res) => {
   upload.array("files", 10)(req, res, (err) => {
     if (err) {
-      return res.status(400).json({
+      return res.status(err.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
         message: "Image upload failed",
         error: err.message
       });

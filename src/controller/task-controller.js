@@ -5,7 +5,7 @@ const Task = require("../models/TaskModel");
 const Project = require("../models/ProjectModel");
 const WorkspaceMembership = require("../models/WorkspaceMembershipModel");
 const { sendResponse } = require("../helper/sendResponse");
-const cloudinary = require("../config/cloudinaryConfig");
+const { toTaskAttachment, destroyCloudinaryAssets } = require("../helper/cloudinaryAssets");
 
 const computeProgress = (subTasks) => {
   const total = subTasks.length;
@@ -145,6 +145,7 @@ const getTaskById = async (req, res) => {
 const createTask = async (req, res) => {
   const userId = req.user.id;
   const { workspaceId } = req.params;
+  let taskSaved = false;
   try {
     const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
 
@@ -204,12 +205,6 @@ const createTask = async (req, res) => {
     };
 
     if (typeof title !== "string" || !title.trim()) {
-      // If title missing, delete uploaded files before responding
-      if (req.files && req.files.length > 0) {
-        await Promise.all(
-          req.files.map((file) => cloudinary.uploader.destroy(file.filename))
-        );
-      }
       return res.status(400).send(sendResponse(false, null, "Title is required"));
     };
 
@@ -221,11 +216,7 @@ const createTask = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Invaild priority value"));
     };
 
-    const attachments = (req.files || []).map((file) => ({
-      filename: file.originalname,
-      url: file.path,
-      public_id: file.filename,
-    }));
+    const attachments = (req.files || []).map(toTaskAttachment);
 
     const newTask = new Task({
       createdBy: userId,
@@ -242,6 +233,7 @@ const createTask = async (req, res) => {
     });
 
     await newTask.save();
+    taskSaved = true;
 
     await newTask.populate("assignees", "name profile_picture email");
     await newTask.populate("comments.user", "name profile_picture");
@@ -251,12 +243,12 @@ const createTask = async (req, res) => {
     );
   } catch (error) {
     console.error(error);
-    if (req.files && req.files.length > 0) {
-      await Promise.all(
-        req.files.map((file) => cloudinary.uploader.destroy(file.filename))
-      ).catch((cleanupErr) => console.error("Cleanup failed:", cleanupErr));
-    }
     return res.status(500).send(sendResponse(false, null, error.message));
+  } finally {
+    if (!taskSaved && req.files?.length > 0) {
+      const { failures } = await destroyCloudinaryAssets(req.files);
+      if (failures.length > 0) console.error("Failed to clean up task upload files:", failures);
+    }
   }
 };
 
@@ -330,7 +322,7 @@ const updateTask = async (req, res) => {
   const taskId = req.params.id;
   const { workspaceId } = req.params;
   let { title, project, description, dueDate, priority, status, assignees, subTasks, removeAttachments } = req.body;
-  const newlyUploadedPublicIds = (req.files || []).map(file => file.filename);
+  const newlyUploadedFiles = req.files || [];
   let taskSaved = false;
   try {
     const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
@@ -404,11 +396,7 @@ const updateTask = async (req, res) => {
     }
 
     if (req.files && req.files.length > 0) {
-      const newAttachments = req.files.map(file => ({
-        filename: file.originalname,
-        url: file.path,
-        public_id: file.filename,
-      }));
+      const newAttachments = req.files.map(toTaskAttachment);
       task.attachments.push(...newAttachments);
     }
 
@@ -465,13 +453,14 @@ const updateTask = async (req, res) => {
     if (assignees !== undefined) task.assignees = assignees;
     if (subTasks !== undefined) task.subTasks = subTasks;
 
+    const { failures: attachmentDeleteFailures } = await destroyCloudinaryAssets(attachmentsToDelete);
+    if (attachmentDeleteFailures.length > 0) {
+      console.error("Task attachment cleanup failed:", attachmentDeleteFailures);
+      return res.status(502).send(sendResponse(false, null, "One or more removed files could not be deleted. The task was not updated; retry the change."));
+    }
+
     await task.save();
     taskSaved = true;
-    await Promise.allSettled(
-      attachmentsToDelete.map(att =>
-        cloudinary.uploader.destroy(att.public_id)
-      )
-    );
     await task.populate("assignees", "name profile_picture email");
     await task.populate("comments.user", "name profile_picture");
 
@@ -481,12 +470,9 @@ const updateTask = async (req, res) => {
   } catch (error) {
     return res.status(500).send(sendResponse(false, null, "Internal server error"));
   } finally {
-    if (!taskSaved && newlyUploadedPublicIds.length > 0) {
-      await Promise.allSettled(
-        newlyUploadedPublicIds.map(id =>
-          cloudinary.uploader.destroy(id)
-        )
-      );
+    if (!taskSaved && newlyUploadedFiles.length > 0) {
+      const { failures } = await destroyCloudinaryAssets(newlyUploadedFiles);
+      if (failures.length > 0) console.error("Failed to clean up task update uploads:", failures);
     }
   };
 };
@@ -608,15 +594,13 @@ const deleteTask = async (req, res) => {
     };
 
     const attachments = task.attachments || [];
+    const { failures } = await destroyCloudinaryAssets(attachments);
+    if (failures.length > 0) {
+      console.error("Task attachment cleanup failed:", failures);
+      return res.status(502).send(sendResponse(false, null, "Task files could not all be deleted. The task was kept; retry the deletion."));
+    }
 
     await task.deleteOne();
-
-    await Promise.allSettled(attachments
-      .filter(attachment => attachment.public_id)
-      .map(attachment =>
-        cloudinary.uploader.destroy(attachment.public_id)
-      )
-    );
 
     return res.status(200).send(sendResponse(true, null, "Task deleted"));
   } catch (error) {
@@ -753,7 +737,7 @@ const addComment = async (req, res) => {
 const addAttachment = async (req, res) => {
   const userId = req.user.id;
   const { id: taskId, workspaceId } = req.params;
-  const newlyUploadedPublicIds = (req.files || []).map(file => file.filename);
+  const newlyUploadedFiles = req.files || [];
   let taskSaved = false;
   try {
     const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
@@ -783,12 +767,12 @@ const addAttachment = async (req, res) => {
       isDeleted: false
     });
 
+    if (!task) {
+      return res.status(404).send(sendResponse(false, null, "Task not found"));
+    }
+
     // Build new attachments from uploaded files
-    const newAttachments = (req.files || []).map((file) => ({
-      filename: file.originalname,
-      url: file.path,
-      public_id: file.filename,
-    }));
+    const newAttachments = (req.files || []).map(toTaskAttachment);
 
     if (newAttachments.length === 0) {
       return res.status(400).send(sendResponse(false, null, "No files uploaded"));
@@ -803,12 +787,9 @@ const addAttachment = async (req, res) => {
   } catch (error) {
     return res.status(500).send(sendResponse(false, null, "INternal server error"));
   } finally {
-    if (!taskSaved && newlyUploadedPublicIds.length > 0) {
-      await Promise.allSettled(
-        newlyUploadedPublicIds.map(id =>
-          cloudinary.uploader.destroy(id)
-        )
-      );
+    if (!taskSaved && newlyUploadedFiles.length > 0) {
+      const { failures } = await destroyCloudinaryAssets(newlyUploadedFiles);
+      if (failures.length > 0) console.error("Failed to clean up attachment uploads:", failures);
     }
   }
 };
@@ -859,14 +840,14 @@ const deleteAttachment = async (req, res) => {
       return res.status(404).send(sendResponse(false, null, "Attachment not found"));
     };
 
-    const publicId = attachment.public_id;
+    const { failures } = await destroyCloudinaryAssets([attachment]);
+    if (failures.length > 0) {
+      console.error("Attachment cleanup failed:", failures);
+      return res.status(502).send(sendResponse(false, null, "Attachment could not be deleted from storage. It was kept on the task; retry the deletion."));
+    };
 
     attachment.deleteOne();
     await task.save();
-
-    if (publicId) {
-      await cloudinary.uploader.destroy(attachment.public_id);
-    };
 
     return res.status(200).send(sendResponse(
       true,
