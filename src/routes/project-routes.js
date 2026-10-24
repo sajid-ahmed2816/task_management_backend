@@ -11,10 +11,10 @@ const {
 
 router.use(authenticate);
 
-router.get("/get", getProjects);
-router.get("/:id", getProjectById);
-router.post("/add", createProject);
-router.patch("/update/:id", updateProject);
-router.delete("/delete/:id", deleteProject);
+router.get("/:workspaceId/get", getProjects);
+router.get("/:workspaceId/:id", getProjectById);
+router.post("/:workspaceId/add", createProject);
+router.patch("/:workspaceId/update/:id", updateProject);
+router.delete("/:workspaceId/delete/:id", deleteProject);
 
 module.exports = router;

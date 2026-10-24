@@ -1,14 +1,29 @@
+const mongoose = require("mongoose");
 const Project = require("../models/ProjectModel");
 const Task = require("../models/TaskModel");
+const WorkspaceMembership = require("../models/WorkspaceMembershipModel");
 const { sendResponse } = require("../helper/sendResponse");
 const paginate = require("../helper/paginate");
 
 const createProject = async (req, res) => {
   const userId = req.user.id
+  const { workspaceId } = req.params;
+  console.log("🚀 ~ createProject ~ workspaceId:", workspaceId)
   try {
-    const { name, description, startDate, dueDate, status, priority, user, color, link } = req.body;
-    const obj = { name, description, startDate, dueDate, user };
-    const reqArr = ["name", "description", "startDate", "dueDate", "user"];
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    const { name, description, startDate, dueDate, status, priority, color, link } = req.body;
+
+    if (typeof name !== "string" || typeof description !== "string") {
+      return res.status(400).send(sendResponse(false, null, "Invalid data type"));
+    };
+
+    const obj = { name: name.trim(), description: description.trim(), startDate, dueDate };
+    const reqArr = ["name", "description", "startDate", "dueDate"];
     const errArr = [];
 
     reqArr.forEach((el) => {
@@ -21,57 +36,127 @@ const createProject = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Missing required data"));
     };
 
+
+    const formattedStartDate = new Date(startDate);
+    const formattedDueDate = new Date(dueDate);
+
+    if (Number.isNaN(formattedStartDate.getTime()) || Number.isNaN(formattedDueDate.getTime())) {
+      return res.status(400).send(sendResponse(false, null, "Invalid date"))
+    };
+
+    if (formattedDueDate < formattedStartDate) {
+      return res.status(400).send(sendResponse(false, null, "Due date cannot be before start date"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
     const project = new Project({
-      name,
-      description,
-      startDate,
-      dueDate,
+      name: obj.name,
+      description: obj.description,
+      startDate: formattedStartDate,
+      dueDate: formattedDueDate,
       status,
       priority,
-      user: userId,
+      createdBy: userId,
       color,
-      link
+      link,
+      workspace: workspaceId
     });
 
     await project.save();
 
     return res.status(201).send(sendResponse(true, project, "Project created successfully"));
   } catch (error) {
-    return res.status(500).send(sendResponse(false, null, "Internal server error", error));
+    if (error.name === "ValidationError") {
+      return res.status(400).send(sendResponse(false, null, "Invalid input"));
+    }
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
   };
 };
 
 const getProjects = async (req, res) => {
-  const userId = req.user.id
+  const userId = req.user.id;
+  const { workspaceId } = req.params;
   try {
-    const { page = 1, limit = 10, startDate, dueDate, search = "" } = req.query;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
     const normalizeArray = (value) => {
       if (!value) return [];
       return Array.isArray(value) ? value : [value];
     };
 
+    const { page = 1, limit = 10, startDate, dueDate, search = "" } = req.query;
     const status = normalizeArray(req.query.status ?? req.query["status[]"]);
     const priority = normalizeArray(req.query.priority ?? req.query["priority[]"]);
+    const formattedPage = Number(page);
+    const formattedLimit = limit === "all" ? limit : Number(limit);
 
-    let filter = { user: userId };
+    if (typeof search !== "string") {
+      return res.status(400).send(sendResponse(false, null, "Invalid input type"))
+    };
+
+    if (status.some((st) => !["planning", "active", "on_hold", "completed", "cancelled"].includes(st))) {
+      return res.status(400).send(sendResponse(false, null, "Invalid status value"))
+    };
+
+    if (priority.some((pr) => !["urgent", "high", "medium", "low"].includes(pr))) {
+      return res.status(400).send(sendResponse(false, null, "Invalid priority value"))
+    };
+
+    let formattedStartDate;
+    let formattedDueDate;
+
+    if (startDate) {
+      formattedStartDate = new Date(startDate);
+    };
+
+    if (dueDate) {
+      formattedDueDate = new Date(dueDate);
+    };
+
+    if (startDate && Number.isNaN(formattedStartDate.getTime())) {
+      return res.status(400).send(sendResponse(false, null, "Invalid date type"));
+    };
+
+    if (dueDate && Number.isNaN(formattedDueDate.getTime())) {
+      return res.status(400).send(sendResponse(false, null, "Invalid date type"));
+    };
+
+    if (startDate && dueDate) {
+      if (formattedDueDate < formattedStartDate) {
+        return res.status(400).send(sendResponse(false, null, "Due date cannot be before start date"));
+      };
+    };
+
+    let filter = { workspace: workspaceId, isDeleted: false };
 
     // Filter by project start date
     if (startDate) {
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
+      formattedStartDate.setHours(0, 0, 0, 0);
 
       filter.startDate = {
-        $gte: start,
+        $gte: formattedStartDate,
       };
     };
 
     // Filter by project due date
     if (dueDate) {
-      const end = new Date(dueDate);
-      end.setHours(23, 59, 59, 999);
+      formattedDueDate.setHours(23, 59, 59, 999);
 
       filter.dueDate = {
-        $lte: end,
+        $lte: formattedDueDate,
       };
     };
 
@@ -97,49 +182,83 @@ const getProjects = async (req, res) => {
       };
     };
 
-    const finalLimit = limit === "all" ? Number.MAX_SAFE_INTEGER : parseInt(limit);
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    if (!Number.isInteger(formattedPage) || (!Number.isInteger(formattedLimit) && formattedLimit !== "all" && formattedLimit <= 0) || formattedPage <= 0) {
+      return res.status(400).send(sendResponse(false, null, "Invalid page or limit type"));
+    };
+
+    const finalLimit = formattedLimit === "all" ? Number.MAX_SAFE_INTEGER : formattedLimit;
 
     const result = await paginate({
       query: filter,
       model: Project,
-      page: parseInt(page),
+      page: formattedPage,
       limit: finalLimit,
       populate: [{
-        path: "user",
+        path: "createdBy",
         select: "name email phone_number profile_picture"
       }]
     });
 
-    return res.status(200).send(
-      sendResponse(
-        true,
-        {
-          projects: result.data,
-          pagination: result.pagination
-        },
-        "Projects fetched successfully"
-      )
-    );
+    return res.status(200).send(sendResponse(
+      true,
+      {
+        projects: result.data,
+        pagination: result.pagination
+      },
+      "Projects fetched successfully"
+    ));
   } catch (error) {
-    return res.status(500).send(sendResponse(false, null, "Internal server error", error));
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
   };
 };
 
 const getProjectById = async (req, res) => {
   const userId = req.user.id;
+  const projectId = req.params.id;
+  const { workspaceId } = req.params;
   try {
-    const projectId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseProjectId = mongoose.Types.ObjectId.isValid(projectId);
+
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"));
+    };
+
+    if (!mongooseProjectId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid project Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
 
     const projectData = await Project.findOne({
       _id: projectId,
-      user: userId
-    }).populate("user", "name email phone_number profile_picture");
+      workspace: workspaceId,
+      isDeleted: false
+    }).populate("createdBy", "name email phone_number profile_picture");
 
     if (!projectData) {
       return res.status(404).send(sendResponse(false, null, "Project not found"));
     };
 
-    const task = await Task.find({ isDeleted: false, project: projectId }).lean();
+    const task = await Task.find({ isDeleted: false, project: projectId, workspace: workspaceId }).lean();
     const project = projectData.toObject();
     const obj = { ...project, task };
 
@@ -151,29 +270,102 @@ const getProjectById = async (req, res) => {
 
 const updateProject = async (req, res) => {
   const userId = req.user.id;
+  const projectId = req.params.id;
+  const { workspaceId } = req.params;
   try {
-    const projectId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseProjectId = mongoose.Types.ObjectId.isValid(projectId);
 
-    const project = await Project.findOne({ _id: projectId, user: userId });
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseProjectId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid project Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const project = await Project.findOne({
+      _id: projectId,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     if (!project) {
       return res.status(404).send(sendResponse(false, null, "Project not found"));
     };
 
-    const { name, description, startDate, dueDate, status, priority, user, color, link } = req.body;
+    const { name, description, startDate, dueDate, status, priority, color, link } = req.body;
 
-    if (name !== undefined) project.name = name;
-    if (description !== undefined) project.description = description;
-    if (startDate !== undefined) project.startDate = startDate;
-    if (dueDate !== undefined) project.dueDate = dueDate;
-    if (status !== undefined) project.status = status;
-    if (priority !== undefined) project.priority = priority;
-    if (user !== undefined) project.user = user;
+    let formattedStartDate = project.startDate;
+    let formattedDueDate = project.dueDate;
+
+    if (name !== undefined) {
+      if (typeof name !== "string") {
+        return res.status(400).send(sendResponse(false, null, "Invalid name data type"));
+      };
+      const trimmedName = name.trim();
+      if (!trimmedName) {
+        return res.status(400).send(sendResponse(false, null, "Name should not be empty"));
+      };
+      project.name = trimmedName;
+    };
+    if (description !== undefined) {
+      if (typeof description !== "string") {
+        return res.status(400).send(sendResponse(false, null, "Invalid description data type"));
+      };
+      const trimmedDescription = description.trim();
+      if (!trimmedDescription) {
+        return res.status(400).send(sendResponse(false, null, "description should not be empty"));
+      };
+      project.description = trimmedDescription
+    };
+    if (startDate !== undefined) {
+      const newDate = new Date(startDate);
+      project.startDate = newDate;
+      formattedStartDate = newDate;
+    };
+    if (dueDate !== undefined) {
+      const newDate = new Date(dueDate);
+      project.dueDate = newDate;
+      formattedDueDate = newDate;
+    };
+    if (status !== undefined) {
+      const isValidStatusValue = ["planning", "active", "on_hold", "completed", "cancelled"].includes(status);
+      if (!isValidStatusValue) {
+        return res.status(400).send(sendResponse(false, null, "Invalid status value"));
+      };
+      project.status = status;
+    };
+    if (priority !== undefined) {
+      const isValidPriorityValue = ["urgent", "high", "medium", "low"].includes(priority);
+      if (!isValidPriorityValue) {
+        return res.status(400).send(sendResponse(false, null, "Invalid priority value"));
+      };
+      project.priority = priority
+    };
     if (color !== undefined) project.color = color;
     if (link !== undefined) project.link = link;
 
+    if (Number.isNaN(formattedStartDate.getTime()) || Number.isNaN(formattedDueDate.getTime())) {
+      return res.status(400).send(sendResponse(false, null, "Invalid date type"));
+    };
+
+    if (formattedDueDate < formattedStartDate) {
+      return res.status(400).send(sendResponse(false, null, "Due date cannot be before start date"));
+    };
+
     await project.save();
-    await project.populate("user", "user email phone_number profile_picture");
+    await project.populate("createdBy", "name email phone_number profile_picture");
 
     return res.status(200).send(sendResponse(true, project, "Project updated successfully"));
   } catch (error) {
@@ -183,20 +375,45 @@ const updateProject = async (req, res) => {
 
 const deleteProject = async (req, res) => {
   const userId = req.user.id;
+  const projectId = req.params.id;
+  const { workspaceId } = req.params;
   try {
-    const projectId = req.params.id;
+    const mongooseWorkspaceId = mongoose.Types.ObjectId.isValid(workspaceId);
+    const mongooseProjectId = mongoose.Types.ObjectId.isValid(projectId);
 
-    const project = await Project.findOne({ _id: projectId, user: userId, isDeleted: false });
+    if (!mongooseWorkspaceId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid Workspace Id"))
+    };
+
+    if (!mongooseProjectId) {
+      return res.status(400).send(sendResponse(false, null, "Invalid project Id"));
+    };
+
+    const workspaceMembership = await WorkspaceMembership.findOne({
+      workspace: workspaceId,
+      user: userId,
+      status: "Active"
+    });
+
+    if (!workspaceMembership) {
+      return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+    };
+
+    const project = await Project.findOne({
+      _id: projectId,
+      workspace: workspaceId,
+      isDeleted: false
+    });
 
     if (!project) {
       return res.status(404).send(sendResponse(false, null, "Project not found"));
     };
 
-    const task = await Task.exists({ user: userId, project: projectId, isDeleted: false });
+    const task = await Task.exists({ workspace: workspaceId, project: projectId, isDeleted: false });
 
     if (task) {
       await Task.updateMany(
-        { user: userId, project: projectId, isDeleted: false },
+        { workspace: workspaceId, project: projectId, isDeleted: false },
         {
           $set: {
             isDeleted: true

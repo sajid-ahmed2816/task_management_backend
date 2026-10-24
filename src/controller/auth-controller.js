@@ -179,12 +179,21 @@ const VerifyOTP = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Invalid OTP"));
     };
 
+    const token = jwt.sign(
+      { id: user._id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
     user.isVerified = true;
     user.otp = undefined;
     user.otpExpiresAt = undefined;
+
     await user.save();
 
-    res.status(200).send(sendResponse(true, user, "Email verified successfully"));
+    const userWithoutPassword = user.toObject();
+    delete userWithoutPassword.password;
+
+    res.status(200).send(sendResponse(true, { user: userWithoutPassword, token }, "Email verified successfully"));
   } catch (error) {
     res.status(500).send(sendResponse(false, null, "Internal server error"));
   };
