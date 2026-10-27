@@ -25,6 +25,30 @@ const getTaskProgressData = (task) => {
   };
 };
 
+const validateAssignees = async (workspaceId, assignees) => {
+  if (!Array.isArray(assignees)) return "assignees must be an array of user IDs";
+  if (assignees.some((id) => !mongoose.Types.ObjectId.isValid(id))) return "assignees contains an invalid user ID";
+  const uniqueIds = [...new Set(assignees.map((id) => id.toString()))];
+  if (uniqueIds.length !== assignees.length) return "assignees must not contain duplicate users";
+  if (!assignees.length) return null;
+  const activeCount = await WorkspaceMembership.countDocuments({
+    workspace: workspaceId,
+    user: { $in: assignees },
+    status: "Active",
+  });
+  return activeCount === uniqueIds.length ? null : "All assignees must be active members of this workspace";
+};
+
+const updateCompletionAttribution = (task, previousStatus, userId) => {
+  if (task.status === "done" && previousStatus !== "done") {
+    task.completedBy = userId;
+    task.completedAt = new Date();
+  } else if (task.status !== "done") {
+    task.completedBy = null;
+    task.completedAt = null;
+  }
+};
+
 const getTasks = async (req, res) => {
   const userId = req.user.id;
   const { status } = req.query;
@@ -52,7 +76,10 @@ const getTasks = async (req, res) => {
       filter.status = status;
     };
 
-    const tasks = await Task.find(filter).populate("assignees", "name profile_picture").lean(); // lean to modify objects
+    const tasks = await Task.find(filter)
+      .populate("assignees", "name profile_picture")
+      .populate("completedBy", "name profile_picture")
+      .lean(); // lean to modify objects
 
     // Add computed progress directly to each task
     const tasksWithProgress = tasks.map((task) => {
@@ -112,6 +139,8 @@ const getTaskById = async (req, res) => {
       isDeleted: false
     }).populate(
       "assignees", "name profile_picture email"
+    ).populate(
+      "completedBy", "name profile_picture"
     ).populate(
       "project"
     ).populate(
@@ -192,7 +221,7 @@ const createTask = async (req, res) => {
       try {
         assignees = JSON.parse(assignees);
       } catch {
-        assignees = [];
+        return res.status(400).send(sendResponse(false, null, "assignees must be valid JSON"));
       }
     };
 
@@ -216,6 +245,10 @@ const createTask = async (req, res) => {
       return res.status(400).send(sendResponse(false, null, "Invaild priority value"));
     };
 
+    if (assignees === undefined) assignees = [];
+    const assigneeError = await validateAssignees(workspaceId, assignees);
+    if (assigneeError) return res.status(400).send(sendResponse(false, null, assigneeError));
+
     const attachments = (req.files || []).map(toTaskAttachment);
 
     const newTask = new Task({
@@ -226,7 +259,9 @@ const createTask = async (req, res) => {
       dueDate: formattedDueDate,
       priority: priority,
       status: status,
-      assignees: assignees || [],
+      completedBy: status === "done" ? userId : null,
+      completedAt: status === "done" ? new Date() : null,
+      assignees,
       subTasks: subTasks || [],
       attachments,
       workspace: workspaceId
@@ -236,6 +271,7 @@ const createTask = async (req, res) => {
     taskSaved = true;
 
     await newTask.populate("assignees", "name profile_picture email");
+    await newTask.populate("completedBy", "name profile_picture");
     await newTask.populate("comments.user", "name profile_picture");
 
     return res.status(201).send(
@@ -296,12 +332,15 @@ const addSubTask = async (req, res) => {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
 
+    const previousStatus = task.status;
+
     task.subTasks.push({ title: title.trim() });
 
     // A completed task becomes active when new work is added.
     if (task.status === "done") {
       task.status = "in-progress";
     };
+    updateCompletionAttribution(task, previousStatus, userId);
 
     await task.save();
 
@@ -355,6 +394,8 @@ const updateTask = async (req, res) => {
     if (!task) {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
+
+    const previousStatus = task.status;
 
     const parseJSONField = (field, fieldName) => {
       if (typeof field === 'string') {
@@ -450,8 +491,13 @@ const updateTask = async (req, res) => {
       };
       task.status = status
     };
-    if (assignees !== undefined) task.assignees = assignees;
+    if (assignees !== undefined) {
+      const assigneeError = await validateAssignees(workspaceId, assignees);
+      if (assigneeError) return res.status(400).send(sendResponse(false, null, assigneeError));
+      task.assignees = assignees;
+    }
     if (subTasks !== undefined) task.subTasks = subTasks;
+    updateCompletionAttribution(task, previousStatus, userId);
 
     const { failures: attachmentDeleteFailures } = await destroyCloudinaryAssets(attachmentsToDelete);
     if (attachmentDeleteFailures.length > 0) {
@@ -462,6 +508,7 @@ const updateTask = async (req, res) => {
     await task.save();
     taskSaved = true;
     await task.populate("assignees", "name profile_picture email");
+    await task.populate("completedBy", "name profile_picture");
     await task.populate("comments.user", "name profile_picture");
 
     return res.status(200).send(
@@ -518,6 +565,8 @@ const updateSubTask = async (req, res) => {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
 
+    const previousStatus = task.status;
+
     const subTask = task.subTasks.id(subTaskId);
 
     if (!subTask) {
@@ -550,7 +599,10 @@ const updateSubTask = async (req, res) => {
       task.status = "in-progress";
     };
 
+    updateCompletionAttribution(task, previousStatus, userId);
+
     await task.save();
+    await task.populate("completedBy", "name profile_picture");
 
     return res.status(200).send(sendResponse(true, getTaskProgressData(task), "Subtask updated successfully"));
   } catch (error) {
@@ -648,6 +700,8 @@ const deleteSubTask = async (req, res) => {
       return res.status(404).send(sendResponse(false, null, "Task not found"));
     };
 
+    const previousStatus = task.status;
+
     const subTask = task.subTasks.id(subTaskId);
 
     if (!subTask) {
@@ -664,7 +718,10 @@ const deleteSubTask = async (req, res) => {
       task.status = "in-progress";
     };
 
+    updateCompletionAttribution(task, previousStatus, userId);
+
     await task.save();
+    await task.populate("completedBy", "name profile_picture");
 
     return res.status(200).send(sendResponse(true, getTaskProgressData(task), "Subtask deleted successfully"));
   } catch (error) {

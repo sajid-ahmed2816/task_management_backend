@@ -102,6 +102,101 @@ const getWorkspaces = async (req, res) => {
   };
 };
 
+const getWorkspaceDashboard = async (req, res) => {
+  const userId = req.user?.id;
+  const { workspaceId } = req.params;
+  if (!userId) return res.status(401).send(sendResponse(false, null, "Unauthorized"));
+  if (!isValidId(workspaceId)) return res.status(400).send(sendResponse(false, null, "Invalid workspace ID"));
+
+  try {
+    const membership = await WorkspaceMembership.exists({ workspace: workspaceId, user: userId, status: "Active" });
+    if (!membership) return res.status(403).send(sendResponse(false, null, "Active workspace membership required"));
+
+    const now = new Date();
+    const pakistanOffsetMs = 5 * 60 * 60 * 1000;
+    const pakistanDate = new Date(now.getTime() + pakistanOffsetMs);
+    pakistanDate.setUTCHours(0, 0, 0, 0);
+    const startOfToday = new Date(pakistanDate.getTime() - pakistanOffsetMs);
+    const upcomingUntil = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const projectFilter = { workspace: workspaceId, isDeleted: false };
+    const taskFilter = { workspace: workspaceId, isDeleted: false };
+    const taskPreviewPopulate = [
+      { path: "project", select: "name" },
+      { path: "assignees", select: "name profile_picture" },
+      { path: "completedBy", select: "name profile_picture" },
+    ];
+
+    const [projectStatusCounts, taskStatusCounts, overdue, upcoming, assignedToMe,
+      upcomingTasks, myTasks, recentTasks, activeMembers, recentConversations] = await Promise.all([
+      Project.aggregate([
+        { $match: projectFilter },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Task.aggregate([
+        { $match: taskFilter },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Task.countDocuments({ ...taskFilter, dueDate: { $lt: startOfToday }, status: { $ne: "done" } }),
+      Task.countDocuments({ ...taskFilter, dueDate: { $gte: startOfToday, $lte: upcomingUntil }, status: { $ne: "done" } }),
+      Task.countDocuments({ ...taskFilter, assignees: userId, status: { $ne: "done" } }),
+      Task.find({ ...taskFilter, dueDate: { $gte: startOfToday, $lte: upcomingUntil }, status: { $ne: "done" } })
+        .select("title status priority dueDate updatedAt completedBy project assignees")
+        .populate(taskPreviewPopulate).sort({ dueDate: 1, _id: 1 }).limit(5).lean(),
+      Task.find({ ...taskFilter, assignees: userId, status: { $ne: "done" } })
+        .select("title status priority dueDate updatedAt completedBy project assignees")
+        .populate(taskPreviewPopulate).sort({ dueDate: 1, _id: 1 }).limit(5).lean(),
+      Task.find(taskFilter).select("title status priority dueDate updatedAt completedBy project assignees")
+        .populate(taskPreviewPopulate).sort({ updatedAt: -1, _id: -1 }).limit(5).lean(),
+      WorkspaceMembership.countDocuments({ workspace: workspaceId, status: "Active" }),
+      ChatConversation.find({ workspace: workspaceId, participants: userId })
+        .select("participants lastMessage updatedAt")
+        .populate("participants", "name profile_picture")
+        .populate({ path: "lastMessage", select: "text sender createdAt", populate: { path: "sender", select: "name profile_picture" } })
+        .sort({ updatedAt: -1, _id: -1 }).limit(5).lean(),
+    ]);
+
+    const projectByStatus = Object.fromEntries(["planning", "active", "on_hold", "completed", "cancelled"].map((status) => [status, 0]));
+    projectStatusCounts.forEach(({ _id, count }) => { if (_id in projectByStatus) projectByStatus[_id] = count; });
+    const taskByStatus = Object.fromEntries(["in-progress", "paused", "done"].map((status) => [status, 0]));
+    taskStatusCounts.forEach(({ _id, count }) => { if (_id in taskByStatus) taskByStatus[_id] = count; });
+
+    const totalProjects = Object.values(projectByStatus).reduce((sum, count) => sum + count, 0);
+    const totalTasks = Object.values(taskByStatus).reduce((sum, count) => sum + count, 0);
+    const taskPreview = (task) => ({
+      _id: task._id,
+      title: task.title,
+      status: task.status,
+      priority: task.priority,
+      dueDate: task.dueDate,
+      updatedAt: task.updatedAt,
+      completedBy: task.completedBy || null,
+      project: task.project ? { _id: task.project._id, name: task.project.name } : null,
+      assignees: (task.assignees || []).map(({ _id, name, profile_picture }) => ({ _id, name, profile_picture })),
+    });
+
+    const data = {
+      summary: {
+        projects: { total: totalProjects, active: projectByStatus.active, byStatus: projectByStatus },
+        tasks: { total: totalTasks, byStatus: taskByStatus, overdue, upcoming, assignedToMe },
+        members: { active: activeMembers },
+      },
+      upcomingTasks: upcomingTasks.map(taskPreview),
+      myTasks: myTasks.map(taskPreview),
+      recentTasks: recentTasks.map(taskPreview),
+      recentConversations: recentConversations.map((conversation) => ({
+        _id: conversation._id,
+        participants: conversation.participants,
+        lastMessage: conversation.lastMessage,
+        updatedAt: conversation.updatedAt,
+      })),
+    };
+    return res.status(200).send(sendResponse(true, data, "Workspace dashboard fetched successfully"));
+  } catch (error) {
+    console.error("Workspace dashboard fetch failed:", error);
+    return res.status(500).send(sendResponse(false, null, "Internal server error"));
+  }
+};
+
 const updateWorkspace = async (req, res) => {
   const user = req.user?.id;
   const { workspaceId } = req.params;
@@ -259,6 +354,7 @@ const deleteWorkspace = async (req, res) => {
 module.exports = {
   createWorkspace,
   getWorkspaces,
+  getWorkspaceDashboard,
   updateWorkspace,
   deleteWorkspace,
 };

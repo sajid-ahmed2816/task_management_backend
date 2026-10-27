@@ -51,5 +51,7 @@ const projectSchema = new mongoose.Schema({
   timestamps: true
 });
 
+projectSchema.index({ workspace: 1, isDeleted: 1, status: 1 });
+
 const Project = mongoose.model("Project", projectSchema);
 module.exports = Project;
