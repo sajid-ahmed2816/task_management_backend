@@ -34,6 +34,15 @@ const taskSchema = new mongoose.Schema(
       enum: ["in-progress", "paused", "done"],
       default: "in-progress",
     },
+    completedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    completedAt: {
+      type: Date,
+      default: null,
+    },
     assignees: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -96,6 +105,9 @@ const taskSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+taskSchema.index({ workspace: 1, isDeleted: 1, status: 1, dueDate: 1 });
+taskSchema.index({ workspace: 1, isDeleted: 1, updatedAt: -1 });
 
 const Task = mongoose.model("Task", taskSchema);
 module.exports = Task;
