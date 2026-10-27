@@ -26,7 +26,7 @@ const storage = new CloudinaryStorage({
   params: {
     folder: "tasks/attachments",
     resource_type: "auto",
-    allowedFormats: ["jpg", "jpeg", "png", "pdf", "doc", "docx", "xls", "xlsx", "csv"],
+    allowed_formats: ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "svg", "pdf", "doc", "docx", "docm", "odt", "rtf", "txt", "md", "xls", "xlsx", "xlsm", "csv", "ods", "ppt", "pptx", "pptm", "odp", "json", "xml", "zip", "7z", "rar"],
   },
 });
 storage._removeFile = (req, file, callback) => {
