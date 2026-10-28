@@ -4,6 +4,7 @@ const ChatConversation = require("../models/ChatConversationModel");
 const ChatMessage = require("../models/ChatMessageModel");
 const User = require("../models/UserModel");
 const { sendResponse } = require("../helper/sendResponse");
+const { createNotification } = require("../helper/notifications");
 
 const validId = (value) => mongoose.isValidObjectId(value);
 
@@ -195,6 +196,18 @@ const sendMessage = async (req, res) => {
     conversation.lastMessage = message._id;
     await conversation.save();
     await message.populate("sender", "name profile_picture");
+    await Promise.all(recipientIds.map((recipient) => createNotification({
+      io: req.app.get("io"),
+      recipient,
+      actor: userId,
+      workspace: workspaceId,
+      type: "chat_message",
+      conversation: conversationId,
+      message: message._id,
+      title: "New chat message",
+      body: text,
+      dedupeKey: `chat-message:${message._id}:${recipient}`,
+    })));
     const io = req.app.get("io");
     if (io) {
       try {

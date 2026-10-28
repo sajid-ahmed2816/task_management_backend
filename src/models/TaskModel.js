@@ -49,6 +49,11 @@ const taskSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+    assignmentVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     comments: [
       {
         user: {

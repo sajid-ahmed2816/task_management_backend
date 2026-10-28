@@ -6,6 +6,7 @@ const Project = require("../models/ProjectModel");
 const WorkspaceMembership = require("../models/WorkspaceMembershipModel");
 const { sendResponse } = require("../helper/sendResponse");
 const { toTaskAttachment, destroyCloudinaryAssets } = require("../helper/cloudinaryAssets");
+const { notifyTaskAssignees } = require("../helper/notifications");
 
 const computeProgress = (subTasks) => {
   const total = subTasks.length;
@@ -262,6 +263,7 @@ const createTask = async (req, res) => {
       completedBy: status === "done" ? userId : null,
       completedAt: status === "done" ? new Date() : null,
       assignees,
+      assignmentVersion: assignees.length ? 1 : 0,
       subTasks: subTasks || [],
       attachments,
       workspace: workspaceId
@@ -269,6 +271,9 @@ const createTask = async (req, res) => {
 
     await newTask.save();
     taskSaved = true;
+    if (assignees.length) {
+      await notifyTaskAssignees({ io: req.app.get("io"), task: newTask, recipientIds: assignees, actor: userId });
+    }
 
     await newTask.populate("assignees", "name profile_picture email");
     await newTask.populate("completedBy", "name profile_picture");
@@ -396,6 +401,8 @@ const updateTask = async (req, res) => {
     };
 
     const previousStatus = task.status;
+    const previousAssigneeIds = new Set(task.assignees.map((assignee) => assignee.toString()));
+    let newlyAssignedIds = [];
 
     const parseJSONField = (field, fieldName) => {
       if (typeof field === 'string') {
@@ -494,6 +501,8 @@ const updateTask = async (req, res) => {
     if (assignees !== undefined) {
       const assigneeError = await validateAssignees(workspaceId, assignees);
       if (assigneeError) return res.status(400).send(sendResponse(false, null, assigneeError));
+      newlyAssignedIds = assignees.map((assignee) => assignee.toString()).filter((assignee) => !previousAssigneeIds.has(assignee));
+      if (newlyAssignedIds.length) task.assignmentVersion = (task.assignmentVersion || 0) + 1;
       task.assignees = assignees;
     }
     if (subTasks !== undefined) task.subTasks = subTasks;
@@ -507,6 +516,9 @@ const updateTask = async (req, res) => {
 
     await task.save();
     taskSaved = true;
+    if (newlyAssignedIds.length) {
+      await notifyTaskAssignees({ io: req.app.get("io"), task, recipientIds: newlyAssignedIds, actor: userId });
+    }
     await task.populate("assignees", "name profile_picture email");
     await task.populate("completedBy", "name profile_picture");
     await task.populate("comments.user", "name profile_picture");

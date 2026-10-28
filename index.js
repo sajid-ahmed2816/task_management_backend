@@ -17,6 +17,7 @@ const projectRoute = require("./src/routes/project-routes");
 const workspaceRoute = require("./src/routes/workspace-routes");
 const membersRoute = require("./src/routes/members-routes")
 const chatRoute = require("./src/routes/chat-routes");
+const notificationRoute = require("./src/routes/notification-routes");
 
 app.use(cors());
 app.use(express.json());
@@ -27,6 +28,7 @@ app.use("/api/projects", projectRoute);
 app.use("/api/workspaces", workspaceRoute);
 app.use("/api/workspace-members", membersRoute);
 app.use("/api/chats", chatRoute);
+app.use("/api/notifications", notificationRoute);
 
 mongoose.connect(process.env.MONGO_URI).then((
   server.listen(process.env.PORT, () => {

@@ -7,6 +7,7 @@ const Project = require("../models/ProjectModel");
 const Task = require("../models/TaskModel");
 const ChatConversation = require("../models/ChatConversationModel");
 const ChatMessage = require("../models/ChatMessageModel");
+const Notification = require("../models/NotificationModel");
 const { sendResponse } = require("../helper/sendResponse");
 const { destroyCloudinaryAssets } = require("../helper/cloudinaryAssets");
 
@@ -328,6 +329,11 @@ const deleteWorkspace = async (req, res) => {
       );
 
       await ChatConversation.deleteMany(
+        { workspace: workspaceId },
+        { session }
+      );
+
+      await Notification.deleteMany(
         { workspace: workspaceId },
         { session }
       );

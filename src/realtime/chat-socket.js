@@ -17,7 +17,9 @@ const registerChatSocket = (io) => {
     }
   });
 
-  io.on("connection", (socket) => {
+  io.on("connection", async (socket) => {
+    await socket.join(`user:${socket.data.userId}`);
+
     socket.on("chat:join", async (payload = {}, acknowledge) => {
       try {
         const { workspaceId, conversationId } = payload;
