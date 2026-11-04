@@ -119,8 +119,9 @@ const getWorkspaceDashboard = async (req, res) => {
     pakistanDate.setUTCHours(0, 0, 0, 0);
     const startOfToday = new Date(pakistanDate.getTime() - pakistanOffsetMs);
     const upcomingUntil = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const projectFilter = { workspace: workspaceId, isDeleted: false };
-    const taskFilter = { workspace: workspaceId, isDeleted: false };
+    const workspaceObjectId = new mongoose.Types.ObjectId(workspaceId);
+    const projectFilter = { workspace: workspaceObjectId, isDeleted: { $ne: true } };
+    const taskFilter = { workspace: workspaceObjectId, isDeleted: false };
     const taskPreviewPopulate = [
       { path: "project", select: "name" },
       { path: "assignees", select: "name profile_picture" },
@@ -131,7 +132,12 @@ const getWorkspaceDashboard = async (req, res) => {
       upcomingTasks, myTasks, recentTasks, activeMembers, recentConversations] = await Promise.all([
       Project.aggregate([
         { $match: projectFilter },
-        { $group: { _id: "$status", count: { $sum: 1 } } },
+        {
+          $group: {
+            _id: { $toLower: { $trim: { input: { $ifNull: ["$status", ""] } } } },
+            count: { $sum: 1 },
+          },
+        },
       ]),
       Task.aggregate([
         { $match: taskFilter },
