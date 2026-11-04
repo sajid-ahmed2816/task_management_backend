@@ -140,7 +140,7 @@ const getProjects = async (req, res) => {
       };
     };
 
-    let filter = { workspace: workspaceId, isDeleted: false };
+    let filter = { workspace: workspaceId, isDeleted: { $ne: true } };
 
     // Filter by project start date
     if (startDate) {
@@ -251,7 +251,7 @@ const getProjectById = async (req, res) => {
     const projectData = await Project.findOne({
       _id: projectId,
       workspace: workspaceId,
-      isDeleted: false
+      isDeleted: { $ne: true }
     }).populate("createdBy", "name email phone_number profile_picture");
 
     if (!projectData) {
@@ -297,7 +297,7 @@ const updateProject = async (req, res) => {
     const project = await Project.findOne({
       _id: projectId,
       workspace: workspaceId,
-      isDeleted: false
+      isDeleted: { $ne: true }
     });
 
     if (!project) {
@@ -402,7 +402,7 @@ const deleteProject = async (req, res) => {
     const project = await Project.findOne({
       _id: projectId,
       workspace: workspaceId,
-      isDeleted: false
+      isDeleted: { $ne: true }
     });
 
     if (!project) {

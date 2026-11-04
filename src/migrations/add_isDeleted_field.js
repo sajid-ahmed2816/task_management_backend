@@ -9,7 +9,9 @@ require("dotenv").config({
 mongoose.connect(process.env.MONGO_URI).then(async () => {
   console.log("Database connected successfully");
   const result = await Task.updateMany({ isDeleted: { $exists: false } }, { $set: { isDeleted: false } });
-  console.log("🚀 ~ result:", result)
+  console.log("Tasks updated:", result);
+  const projectResult = await Project.updateMany({ isDeleted: { $exists: false } }, { $set: { isDeleted: false } });
+  console.log("Projects updated:", projectResult);
 }).catch((err) => {
   console.log(err);
 });
